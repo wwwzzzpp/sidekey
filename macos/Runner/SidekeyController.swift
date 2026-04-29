@@ -4,6 +4,23 @@ import ApplicationServices
 import ServiceManagement
 
 private struct NativeKeyBinding {
+  let strokes: [NativeKeyStroke]
+
+  var isValid: Bool {
+    !strokes.isEmpty && strokes.allSatisfy { $0.isValid }
+  }
+
+  var isHoldable: Bool {
+    strokes.count == 1
+  }
+
+  static let invalid = NativeKeyBinding(strokes: [])
+  static let enter = NativeKeyBinding(
+    strokes: [NativeKeyStroke(macosKeyCode: 36, modifiers: [])]
+  )
+}
+
+private struct NativeKeyStroke {
   let macosKeyCode: Int
   let modifiers: [String]
 
@@ -24,8 +41,8 @@ final class SidekeyController {
   private var interceptOriginal = true
   private var voiceHoldMode = false
   private var voicePressed = false
-  private var voiceBinding = NativeKeyBinding(macosKeyCode: -1, modifiers: [])
-  private var backBinding = NativeKeyBinding(macosKeyCode: 36, modifiers: [])
+  private var voiceBinding = NativeKeyBinding.invalid
+  private var backBinding = NativeKeyBinding.enter
 
   func attach(to messenger: FlutterBinaryMessenger) {
     channel = FlutterMethodChannel(name: "sidekey/native", binaryMessenger: messenger)
@@ -75,7 +92,7 @@ final class SidekeyController {
     voiceBinding = parseBinding(args["voiceBinding"] as? [String: Any])
     backBinding = parseBinding(args["backBinding"] as? [String: Any])
     if !backBinding.isValid {
-      backBinding = NativeKeyBinding(macosKeyCode: 36, modifiers: [])
+      backBinding = NativeKeyBinding.enter
     }
 
     if enabled {
@@ -233,7 +250,7 @@ final class SidekeyController {
       }
       handled = true
     } else if buttonNumber == forwardButtonNumber, voiceBinding.isValid {
-      if voiceHoldMode {
+      if voiceHoldMode && voiceBinding.isHoldable {
         if isDown && !voicePressed {
           press(binding: voiceBinding)
           voicePressed = true
@@ -270,43 +287,96 @@ final class SidekeyController {
 
   private func parseBinding(_ data: [String: Any]?) -> NativeKeyBinding {
     guard let data else {
-      return NativeKeyBinding(macosKeyCode: -1, modifiers: [])
+      return NativeKeyBinding.invalid
     }
+    if let strokesData = data["strokes"] as? [[String: Any]] {
+      let strokes = strokesData.compactMap(parseStroke)
+      if !strokes.isEmpty {
+        return NativeKeyBinding(strokes: strokes)
+      }
+    }
+    if let stroke = parseStroke(data) {
+      return NativeKeyBinding(strokes: [stroke])
+    }
+    return NativeKeyBinding.invalid
+  }
+
+  private func parseStroke(_ data: [String: Any]) -> NativeKeyStroke? {
     let keyCode: Int
     if let number = data["macosKeyCode"] as? NSNumber {
       keyCode = number.intValue
     } else {
       keyCode = data["macosKeyCode"] as? Int ?? -1
     }
+    if keyCode < 0 {
+      return nil
+    }
     let modifiers = data["modifiers"] as? [String] ?? []
-    return NativeKeyBinding(macosKeyCode: keyCode, modifiers: modifiers)
+    return NativeKeyStroke(macosKeyCode: keyCode, modifiers: modifiers)
   }
 
   private func press(binding: NativeKeyBinding) {
-    guard binding.isValid else {
+    guard binding.isValid, let stroke = binding.strokes.first else {
       return
     }
-    let flags = eventFlags(for: binding.modifiers)
-    for modifier in binding.modifiers {
-      sendModifier(modifier, keyDown: true, flags: flags)
-    }
-    sendKey(code: binding.macosKeyCode, keyDown: true, flags: flags)
+    press(stroke: stroke)
   }
 
   private func release(binding: NativeKeyBinding) {
-    guard binding.isValid else {
+    guard binding.isValid, let stroke = binding.strokes.first else {
       return
     }
-    let flags = eventFlags(for: binding.modifiers)
-    sendKey(code: binding.macosKeyCode, keyDown: false, flags: flags)
-    for modifier in binding.modifiers.reversed() {
-      sendModifier(modifier, keyDown: false, flags: [])
-    }
+    release(stroke: stroke)
   }
 
   private func tap(binding: NativeKeyBinding) {
-    press(binding: binding)
-    release(binding: binding)
+    guard binding.isValid else {
+      return
+    }
+    for (index, stroke) in binding.strokes.enumerated() {
+      tap(stroke: stroke)
+      if index < binding.strokes.count - 1 {
+        Thread.sleep(forTimeInterval: 0.06)
+      }
+    }
+  }
+
+  private func press(stroke: NativeKeyStroke) {
+    guard stroke.isValid else {
+      return
+    }
+    var flags: CGEventFlags = []
+    for modifier in stroke.modifiers {
+      flags.insert(modifierFlag(for: modifier))
+      sendModifier(modifier, keyDown: true, flags: flags)
+    }
+    sendKey(
+      code: stroke.macosKeyCode,
+      keyDown: true,
+      flags: flags.union(modifierFlag(forKeyCode: stroke.macosKeyCode))
+    )
+  }
+
+  private func release(stroke: NativeKeyStroke) {
+    guard stroke.isValid else {
+      return
+    }
+    var flags = eventFlags(for: stroke.modifiers)
+    sendKey(
+      code: stroke.macosKeyCode,
+      keyDown: false,
+      flags: flags
+    )
+    for modifier in stroke.modifiers.reversed() {
+      flags.remove(modifierFlag(for: modifier))
+      sendModifier(modifier, keyDown: false, flags: flags)
+    }
+  }
+
+  private func tap(stroke: NativeKeyStroke) {
+    press(stroke: stroke)
+    Thread.sleep(forTimeInterval: 0.045)
+    release(stroke: stroke)
   }
 
   private func sendModifier(_ modifier: String, keyDown: Bool, flags: CGEventFlags) {
@@ -326,7 +396,7 @@ final class SidekeyController {
     else {
       return
     }
-    event.flags = flags
+    event.flags = event.flags.union(flags)
     event.post(tap: .cghidEventTap)
   }
 
@@ -334,13 +404,13 @@ final class SidekeyController {
     var flags: CGEventFlags = []
     for modifier in modifiers {
       switch modifier {
-      case "ctrl":
+      case "ctrl", "ctrlLeft", "ctrlRight":
         flags.insert(.maskControl)
-      case "shift":
+      case "shift", "shiftLeft", "shiftRight":
         flags.insert(.maskShift)
-      case "alt":
+      case "alt", "altLeft", "altRight":
         flags.insert(.maskAlternate)
-      case "meta":
+      case "meta", "metaLeft", "metaRight":
         flags.insert(.maskCommand)
       default:
         break
@@ -351,16 +421,56 @@ final class SidekeyController {
 
   private func modifierKeyCode(_ modifier: String) -> Int? {
     switch modifier {
-    case "ctrl":
+    case "ctrl", "ctrlLeft":
       return 59
-    case "shift":
+    case "ctrlRight":
+      return 62
+    case "shift", "shiftLeft":
       return 56
-    case "alt":
+    case "shiftRight":
+      return 60
+    case "alt", "altLeft":
       return 58
-    case "meta":
+    case "altRight":
+      return 61
+    case "meta", "metaLeft":
       return 55
+    case "metaRight":
+      return 54
     default:
       return nil
+    }
+  }
+
+  private func modifierFlag(for modifier: String) -> CGEventFlags {
+    switch modifier {
+    case "ctrl", "ctrlLeft", "ctrlRight":
+      return .maskControl
+    case "shift", "shiftLeft", "shiftRight":
+      return .maskShift
+    case "alt", "altLeft", "altRight":
+      return .maskAlternate
+    case "meta", "metaLeft", "metaRight":
+      return .maskCommand
+    default:
+      return []
+    }
+  }
+
+  private func modifierFlag(forKeyCode keyCode: Int) -> CGEventFlags {
+    switch keyCode {
+    case 59, 62:
+      return .maskControl
+    case 56, 60:
+      return .maskShift
+    case 58, 61:
+      return .maskAlternate
+    case 55, 54:
+      return .maskCommand
+    case 63:
+      return .maskSecondaryFn
+    default:
+      return []
     }
   }
 }

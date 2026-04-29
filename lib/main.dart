@@ -56,6 +56,113 @@ class KeyBinding {
     required this.windowsVk,
     required this.macosKeyCode,
     this.modifiers = const <String>[],
+    this.strokes = const <KeyStroke>[],
+  });
+
+  final String label;
+  final int windowsVk;
+  final int macosKeyCode;
+  final List<String> modifiers;
+  final List<KeyStroke> strokes;
+
+  bool get isEmpty => strokes.isEmpty && windowsVk <= 0 && macosKeyCode <= 0;
+
+  List<KeyStroke> get effectiveStrokes {
+    if (strokes.isNotEmpty) {
+      return strokes;
+    }
+    if (isEmpty) {
+      return const <KeyStroke>[];
+    }
+    return <KeyStroke>[
+      KeyStroke(
+        label: label,
+        windowsVk: windowsVk,
+        macosKeyCode: macosKeyCode,
+        modifiers: modifiers,
+      ),
+    ];
+  }
+
+  Map<String, Object?> toJson() {
+    return <String, Object?>{
+      'label': label,
+      'windowsVk': windowsVk,
+      'macosKeyCode': macosKeyCode,
+      'modifiers': modifiers,
+      'strokes': effectiveStrokes.map((stroke) => stroke.toJson()).toList(),
+    };
+  }
+
+  Map<String, Object?> toNativeJson() => toJson();
+
+  static KeyBinding? fromJson(Object? raw) {
+    if (raw is! Map) {
+      return null;
+    }
+    final modifiers = raw['modifiers'];
+    final parsedStrokes = _parseStrokes(raw['strokes']);
+    final label =
+        (raw['label'] as String?) ??
+        (parsedStrokes.isEmpty ? '未设置' : _compactStrokeLabels(parsedStrokes));
+    final windowsVk =
+        (raw['windowsVk'] as num?)?.toInt() ??
+        (parsedStrokes.isEmpty ? 0 : parsedStrokes.first.windowsVk);
+    final macosKeyCode =
+        (raw['macosKeyCode'] as num?)?.toInt() ??
+        (parsedStrokes.isEmpty ? 0 : parsedStrokes.first.macosKeyCode);
+    final parsedModifiers = modifiers is List
+        ? modifiers.whereType<String>().toList(growable: false)
+        : (parsedStrokes.isEmpty
+              ? const <String>[]
+              : parsedStrokes.first.modifiers);
+    return KeyBinding(
+      label: label,
+      windowsVk: windowsVk,
+      macosKeyCode: macosKeyCode,
+      modifiers: parsedModifiers,
+      strokes: parsedStrokes.isEmpty && (windowsVk > 0 || macosKeyCode > 0)
+          ? <KeyStroke>[
+              KeyStroke(
+                label: label,
+                windowsVk: windowsVk,
+                macosKeyCode: macosKeyCode,
+                modifiers: parsedModifiers,
+              ),
+            ]
+          : parsedStrokes,
+    );
+  }
+
+  factory KeyBinding.sequence(List<KeyStroke> strokes) {
+    assert(strokes.isNotEmpty);
+    final immutableStrokes = List<KeyStroke>.unmodifiable(strokes);
+    final first = immutableStrokes.first;
+    return KeyBinding(
+      label: _compactStrokeLabels(immutableStrokes),
+      windowsVk: first.windowsVk,
+      macosKeyCode: first.macosKeyCode,
+      modifiers: first.modifiers,
+      strokes: immutableStrokes,
+    );
+  }
+
+  static const enter = KeyBinding(
+    label: 'Enter',
+    windowsVk: 0x0D,
+    macosKeyCode: 36,
+    strokes: <KeyStroke>[
+      KeyStroke(label: 'Enter', windowsVk: 0x0D, macosKeyCode: 36),
+    ],
+  );
+}
+
+class KeyStroke {
+  const KeyStroke({
+    required this.label,
+    required this.windowsVk,
+    required this.macosKeyCode,
+    this.modifiers = const <String>[],
   });
 
   final String label;
@@ -74,28 +181,48 @@ class KeyBinding {
     };
   }
 
-  Map<String, Object?> toNativeJson() => toJson();
-
-  static KeyBinding? fromJson(Object? raw) {
+  static KeyStroke? fromJson(Object? raw) {
     if (raw is! Map) {
       return null;
     }
+    final windowsVk = (raw['windowsVk'] as num?)?.toInt() ?? 0;
+    final macosKeyCode = (raw['macosKeyCode'] as num?)?.toInt() ?? 0;
+    if (windowsVk <= 0 && macosKeyCode <= 0) {
+      return null;
+    }
     final modifiers = raw['modifiers'];
-    return KeyBinding(
+    return KeyStroke(
       label: (raw['label'] as String?) ?? '未设置',
-      windowsVk: (raw['windowsVk'] as num?)?.toInt() ?? 0,
-      macosKeyCode: (raw['macosKeyCode'] as num?)?.toInt() ?? 0,
+      windowsVk: windowsVk,
+      macosKeyCode: macosKeyCode,
       modifiers: modifiers is List
           ? modifiers.whereType<String>().toList(growable: false)
           : const <String>[],
     );
   }
+}
 
-  static const enter = KeyBinding(
-    label: 'Enter',
-    windowsVk: 0x0D,
-    macosKeyCode: 36,
-  );
+List<KeyStroke> _parseStrokes(Object? raw) {
+  if (raw is! List) {
+    return const <KeyStroke>[];
+  }
+  return raw.map(KeyStroke.fromJson).nonNulls.toList(growable: false);
+}
+
+String _compactStrokeLabels(List<KeyStroke> strokes) {
+  final parts = <String>[];
+  var index = 0;
+  while (index < strokes.length) {
+    final label = strokes[index].label;
+    var count = 1;
+    while (index + count < strokes.length &&
+        strokes[index + count].label == label) {
+      count += 1;
+    }
+    parts.add(count == 1 ? label : '$label x$count');
+    index += count;
+  }
+  return parts.join(' -> ');
 }
 
 class AppConfig {
@@ -293,6 +420,46 @@ final Set<LogicalKeyboardKey> _modifierKeys = <LogicalKeyboardKey>{
   LogicalKeyboardKey.metaRight,
 };
 
+final Map<LogicalKeyboardKey, String> _modifierIds =
+    <LogicalKeyboardKey, String>{
+      LogicalKeyboardKey.controlLeft: 'ctrlLeft',
+      LogicalKeyboardKey.controlRight: 'ctrlRight',
+      LogicalKeyboardKey.shiftLeft: 'shiftLeft',
+      LogicalKeyboardKey.shiftRight: 'shiftRight',
+      LogicalKeyboardKey.altLeft: 'altLeft',
+      LogicalKeyboardKey.altRight: 'altRight',
+      LogicalKeyboardKey.metaLeft: 'metaLeft',
+      LogicalKeyboardKey.metaRight: 'metaRight',
+    };
+
+const List<LogicalKeyboardKey> _modifierKeyOrder = <LogicalKeyboardKey>[
+  LogicalKeyboardKey.controlLeft,
+  LogicalKeyboardKey.controlRight,
+  LogicalKeyboardKey.shiftLeft,
+  LogicalKeyboardKey.shiftRight,
+  LogicalKeyboardKey.altLeft,
+  LogicalKeyboardKey.altRight,
+  LogicalKeyboardKey.metaLeft,
+  LogicalKeyboardKey.metaRight,
+];
+
+final Map<LogicalKeyboardKey, KeySpec> _standaloneKeySpecs =
+    <LogicalKeyboardKey, KeySpec>{
+      LogicalKeyboardKey.controlLeft: KeySpec('Left Control', 0xA2, 59),
+      LogicalKeyboardKey.controlRight: KeySpec('Right Control', 0xA3, 62),
+      LogicalKeyboardKey.shiftLeft: KeySpec('Left Shift', 0xA0, 56),
+      LogicalKeyboardKey.shiftRight: KeySpec('Right Shift', 0xA1, 60),
+      LogicalKeyboardKey.altLeft: KeySpec('Left Option', 0xA4, 58),
+      LogicalKeyboardKey.altRight: KeySpec('Right Option', 0xA5, 61),
+      LogicalKeyboardKey.metaLeft: KeySpec('Left Command', 0x5B, 55),
+      LogicalKeyboardKey.metaRight: KeySpec('Right Command', 0x5C, 54),
+      LogicalKeyboardKey.fn: KeySpec('Fn', 0, 63),
+    };
+
+final Set<LogicalKeyboardKey> _fnKeys = <LogicalKeyboardKey>{
+  LogicalKeyboardKey.fn,
+};
+
 class SideKeyApp extends StatelessWidget {
   const SideKeyApp({super.key});
 
@@ -333,12 +500,16 @@ class SideKeyHome extends StatefulWidget {
 class _SideKeyHomeState extends State<SideKeyHome>
     with TrayListener, WindowListener {
   final FocusNode _recorderFocusNode = FocusNode(debugLabel: 'HotkeyRecorder');
+  final List<KeyStroke> _recordedStrokes = <KeyStroke>[];
+  final Set<LogicalKeyboardKey> _modifiersUsedInChord = <LogicalKeyboardKey>{};
+  final Set<LogicalKeyboardKey> _fnRecordedOnDown = <LogicalKeyboardKey>{};
   AppConfig _config = AppConfig.defaults;
   NativeStatus _status = const NativeStatus();
   bool _loading = true;
   bool _recording = false;
   String? _error;
   Timer? _statusTimer;
+  Timer? _recordingFinishTimer;
 
   @override
   void initState() {
@@ -351,6 +522,7 @@ class _SideKeyHomeState extends State<SideKeyHome>
   @override
   void dispose() {
     _statusTimer?.cancel();
+    _recordingFinishTimer?.cancel();
     trayManager.removeListener(this);
     windowManager.removeListener(this);
     _recorderFocusNode.dispose();
@@ -500,6 +672,10 @@ class _SideKeyHomeState extends State<SideKeyHome>
   }
 
   void _startRecording() {
+    _recordingFinishTimer?.cancel();
+    _recordedStrokes.clear();
+    _modifiersUsedInChord.clear();
+    _fnRecordedOnDown.clear();
     setState(() {
       _recording = true;
       _error = null;
@@ -510,13 +686,40 @@ class _SideKeyHomeState extends State<SideKeyHome>
   }
 
   void _handleRecorderKey(KeyEvent event) {
-    if (!_recording || event is! KeyDownEvent) {
+    if (!_recording || event is KeyRepeatEvent) {
       return;
     }
     final logicalKey = event.logicalKey;
-    if (_modifierKeys.contains(logicalKey)) {
+
+    if (event is KeyDownEvent) {
+      if (_fnKeys.contains(logicalKey)) {
+        if (_fnRecordedOnDown.add(logicalKey)) {
+          _recordStandaloneKey(logicalKey);
+        }
+        return;
+      }
+      if (_modifierKeys.contains(logicalKey)) {
+        return;
+      }
+      _recordChord(logicalKey);
       return;
     }
+
+    if (event is KeyUpEvent) {
+      if (_fnKeys.contains(logicalKey)) {
+        _fnRecordedOnDown.remove(logicalKey);
+        return;
+      }
+      if (_modifierKeys.contains(logicalKey)) {
+        if (_modifiersUsedInChord.remove(logicalKey)) {
+          return;
+        }
+        _recordModifierChordOrStandalone(logicalKey);
+      }
+    }
+  }
+
+  void _recordChord(LogicalKeyboardKey logicalKey) {
     final spec = _keySpecs[logicalKey];
     if (spec == null) {
       setState(() {
@@ -525,40 +728,132 @@ class _SideKeyHomeState extends State<SideKeyHome>
       return;
     }
 
-    final modifiers = <String>[
-      if (HardwareKeyboard.instance.isControlPressed) 'ctrl',
-      if (HardwareKeyboard.instance.isShiftPressed) 'shift',
-      if (HardwareKeyboard.instance.isAltPressed) 'alt',
-      if (HardwareKeyboard.instance.isMetaPressed) 'meta',
-    ];
+    final modifiers = _activeModifierIds();
+    for (final modifierKey in _activeModifierKeys()) {
+      _modifiersUsedInChord.add(modifierKey);
+    }
     final label = <String>[
       ...modifiers.map(_modifierLabel),
       spec.label,
     ].join(' + ');
 
-    unawaited(
-      _updateConfig(
-        _config.copyWith(
-          voiceBinding: KeyBinding(
-            label: label,
-            windowsVk: spec.windowsVk,
-            macosKeyCode: spec.macosKeyCode,
-            modifiers: modifiers,
-          ),
-        ),
+    _recordStroke(
+      KeyStroke(
+        label: label,
+        windowsVk: spec.windowsVk,
+        macosKeyCode: spec.macosKeyCode,
+        modifiers: modifiers,
       ),
     );
+  }
+
+  void _recordStandaloneKey(LogicalKeyboardKey logicalKey) {
+    final spec = _standaloneKeySpecs[logicalKey] ?? _keySpecs[logicalKey];
+    if (spec == null) {
+      setState(() {
+        _error = '暂不支持录制 ${logicalKey.keyLabel}，请换一个常用键或功能键。';
+      });
+      return;
+    }
+    final modifierId = _modifierIds[logicalKey];
+    _recordStroke(
+      KeyStroke(
+        label: modifierId == null ? spec.label : _modifierLabel(modifierId),
+        windowsVk: spec.windowsVk,
+        macosKeyCode: spec.macosKeyCode,
+      ),
+    );
+  }
+
+  void _recordModifierChordOrStandalone(LogicalKeyboardKey logicalKey) {
+    final activeModifierKeys = _activeModifierKeys()
+        .where((key) => key != logicalKey)
+        .toList(growable: false);
+    if (activeModifierKeys.isEmpty) {
+      _recordStandaloneKey(logicalKey);
+      return;
+    }
+
+    final spec = _standaloneKeySpecs[logicalKey];
+    if (spec == null) {
+      _recordStandaloneKey(logicalKey);
+      return;
+    }
+
+    final modifiers = <String>[
+      for (final key in activeModifierKeys) _modifierIds[key]!,
+    ];
+    for (final modifierKey in activeModifierKeys) {
+      _modifiersUsedInChord.add(modifierKey);
+    }
+
+    _recordStroke(
+      KeyStroke(
+        label: <String>[
+          ...modifiers.map(_modifierLabel),
+          _modifierLabel(_modifierIds[logicalKey]!),
+        ].join(' + '),
+        windowsVk: spec.windowsVk,
+        macosKeyCode: spec.macosKeyCode,
+        modifiers: modifiers,
+      ),
+    );
+  }
+
+  void _recordStroke(KeyStroke stroke) {
+    _recordedStrokes.add(stroke);
+    setState(() => _error = null);
+    _recordingFinishTimer?.cancel();
+    _recordingFinishTimer = Timer(
+      const Duration(milliseconds: 650),
+      _finishRecording,
+    );
+  }
+
+  void _finishRecording() {
+    if (!_recording || _recordedStrokes.isEmpty) {
+      return;
+    }
+    final binding = KeyBinding.sequence(List<KeyStroke>.of(_recordedStrokes));
+    _recordingFinishTimer?.cancel();
+    _recordingFinishTimer = null;
+    _recordedStrokes.clear();
+    _modifiersUsedInChord.clear();
+    _fnRecordedOnDown.clear();
     setState(() {
       _recording = false;
     });
+    unawaited(_updateConfig(_config.copyWith(voiceBinding: binding)));
+  }
+
+  List<LogicalKeyboardKey> _activeModifierKeys() {
+    final keyboard = HardwareKeyboard.instance;
+    return <LogicalKeyboardKey>[
+      for (final key in _modifierKeyOrder)
+        if (keyboard.isLogicalKeyPressed(key)) key,
+    ];
+  }
+
+  List<String> _activeModifierIds() {
+    return <String>[
+      for (final key in _activeModifierKeys()) _modifierIds[key]!,
+    ];
   }
 
   String _modifierLabel(String modifier) {
     return switch (modifier) {
       'ctrl' => Platform.isMacOS ? 'Control' : 'Ctrl',
+      'ctrlLeft' => Platform.isMacOS ? 'Left Control' : 'Left Ctrl',
+      'ctrlRight' => Platform.isMacOS ? 'Right Control' : 'Right Ctrl',
       'shift' => 'Shift',
+      'shiftLeft' => 'Left Shift',
+      'shiftRight' => 'Right Shift',
       'alt' => Platform.isMacOS ? 'Option' : 'Alt',
+      'altLeft' => Platform.isMacOS ? 'Left Option' : 'Left Alt',
+      'altRight' => Platform.isMacOS ? 'Right Option' : 'Right Alt',
       'meta' => Platform.isMacOS ? 'Command' : 'Win',
+      'metaLeft' => Platform.isMacOS ? 'Left Command' : 'Left Win',
+      'metaRight' => Platform.isMacOS ? 'Right Command' : 'Right Win',
       _ => modifier,
     };
   }
@@ -849,7 +1144,7 @@ class _VoicePanel extends StatelessWidget {
               const SizedBox(height: 12),
               const _InlineMessage(
                 icon: Icons.radio_button_checked,
-                text: '请直接按下目标语音软件的快捷键，例如 Ctrl + Shift + V。',
+                text: '请按下目标热键；Fn、单独 Control、连续两次 Control 会在停顿后自动保存。',
               ),
             ],
           ],

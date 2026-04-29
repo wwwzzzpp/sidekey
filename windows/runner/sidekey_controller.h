@@ -18,11 +18,18 @@ class SidekeyController {
   ~SidekeyController();
 
  private:
-  struct KeyBinding {
+  struct KeyStroke {
     int windows_vk = 0;
     std::vector<WORD> modifiers;
 
     bool IsValid() const { return windows_vk > 0; }
+  };
+
+  struct KeyBinding {
+    std::vector<KeyStroke> strokes;
+
+    bool IsValid() const { return !strokes.empty(); }
+    bool IsHoldable() const { return strokes.size() == 1; }
   };
 
   static LRESULT CALLBACK LowLevelMouseProc(int n_code, WPARAM w_param,
@@ -46,10 +53,14 @@ class SidekeyController {
   void PressBinding(const KeyBinding& binding);
   void ReleaseBinding(const KeyBinding& binding);
   void TapBinding(const KeyBinding& binding);
+  void PressStroke(const KeyStroke& stroke);
+  void ReleaseStroke(const KeyStroke& stroke);
+  void TapStroke(const KeyStroke& stroke);
   void SendVirtualKey(WORD vk, bool key_down);
   bool TriggerAction(const std::string& action);
 
   KeyBinding ParseBinding(const flutter::EncodableMap* map) const;
+  KeyStroke ParseStroke(const flutter::EncodableMap* map) const;
 
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> channel_;
   HHOOK mouse_hook_ = nullptr;
