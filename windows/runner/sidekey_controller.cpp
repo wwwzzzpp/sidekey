@@ -97,14 +97,38 @@ WORD ModifierToVk(const std::string& modifier) {
   if (modifier == "ctrl") {
     return VK_CONTROL;
   }
+  if (modifier == "ctrlLeft") {
+    return VK_LCONTROL;
+  }
+  if (modifier == "ctrlRight") {
+    return VK_RCONTROL;
+  }
   if (modifier == "shift") {
     return VK_SHIFT;
+  }
+  if (modifier == "shiftLeft") {
+    return VK_LSHIFT;
+  }
+  if (modifier == "shiftRight") {
+    return VK_RSHIFT;
   }
   if (modifier == "alt") {
     return VK_MENU;
   }
+  if (modifier == "altLeft") {
+    return VK_LMENU;
+  }
+  if (modifier == "altRight") {
+    return VK_RMENU;
+  }
   if (modifier == "meta") {
     return VK_LWIN;
+  }
+  if (modifier == "metaLeft") {
+    return VK_LWIN;
+  }
+  if (modifier == "metaRight") {
+    return VK_RWIN;
   }
   return 0;
 }
@@ -136,6 +160,9 @@ bool IsExtendedKey(WORD vk) {
     case VK_RIGHT:
     case VK_UP:
     case VK_DOWN:
+    case VK_RCONTROL:
+    case VK_RMENU:
+    case VK_RWIN:
       return true;
     default:
       return false;
@@ -147,7 +174,9 @@ bool IsExtendedKey(WORD vk) {
 SidekeyController* SidekeyController::instance_ = nullptr;
 
 SidekeyController::SidekeyController(flutter::BinaryMessenger* messenger) {
-  back_binding_.windows_vk = VK_RETURN;
+  KeyStroke enter;
+  enter.windows_vk = VK_RETURN;
+  back_binding_.strokes.push_back(enter);
   channel_ = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
       messenger, "sidekey/native", &flutter::StandardMethodCodec::GetInstance());
   channel_->SetMethodCallHandler(
@@ -227,7 +256,9 @@ flutter::EncodableValue SidekeyController::ApplyConfig(
     voice_binding_ = ParseBinding(GetMap(*map, "voiceBinding"));
     back_binding_ = ParseBinding(GetMap(*map, "backBinding"));
     if (!back_binding_.IsValid()) {
-      back_binding_.windows_vk = VK_RETURN;
+      KeyStroke enter;
+      enter.windows_vk = VK_RETURN;
+      back_binding_.strokes.push_back(enter);
     }
   }
 
@@ -299,6 +330,11 @@ bool SidekeyController::SetLaunchAtLogin(bool enabled) {
 }
 
 void SidekeyController::Shutdown() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (voice_pressed_) {
+    ReleaseBinding(voice_binding_);
+    voice_pressed_ = false;
+  }
   StopHook();
 }
 
@@ -350,7 +386,7 @@ LRESULT SidekeyController::HandleMouseEvent(int n_code, WPARAM w_param,
     }
     handled = true;
   } else if (button == kXButtonForward && voice_binding_.IsValid()) {
-    if (voice_hold_mode_) {
+    if (voice_hold_mode_ && voice_binding_.IsHoldable()) {
       if (w_param == WM_XBUTTONDOWN && !voice_pressed_) {
         PressBinding(voice_binding_);
         voice_pressed_ = true;
@@ -374,26 +410,53 @@ void SidekeyController::PressBinding(const KeyBinding& binding) {
   if (!binding.IsValid()) {
     return;
   }
-  for (WORD modifier : binding.modifiers) {
-    SendVirtualKey(modifier, true);
-  }
-  SendVirtualKey(static_cast<WORD>(binding.windows_vk), true);
+  PressStroke(binding.strokes.front());
 }
 
 void SidekeyController::ReleaseBinding(const KeyBinding& binding) {
   if (!binding.IsValid()) {
     return;
   }
-  SendVirtualKey(static_cast<WORD>(binding.windows_vk), false);
-  for (auto it = binding.modifiers.rbegin(); it != binding.modifiers.rend();
+  ReleaseStroke(binding.strokes.front());
+}
+
+void SidekeyController::TapBinding(const KeyBinding& binding) {
+  if (!binding.IsValid()) {
+    return;
+  }
+  for (size_t i = 0; i < binding.strokes.size(); ++i) {
+    TapStroke(binding.strokes[i]);
+    if (i + 1 < binding.strokes.size()) {
+      Sleep(60);
+    }
+  }
+}
+
+void SidekeyController::PressStroke(const KeyStroke& stroke) {
+  if (!stroke.IsValid()) {
+    return;
+  }
+  for (WORD modifier : stroke.modifiers) {
+    SendVirtualKey(modifier, true);
+  }
+  SendVirtualKey(static_cast<WORD>(stroke.windows_vk), true);
+}
+
+void SidekeyController::ReleaseStroke(const KeyStroke& stroke) {
+  if (!stroke.IsValid()) {
+    return;
+  }
+  SendVirtualKey(static_cast<WORD>(stroke.windows_vk), false);
+  for (auto it = stroke.modifiers.rbegin(); it != stroke.modifiers.rend();
        ++it) {
     SendVirtualKey(*it, false);
   }
 }
 
-void SidekeyController::TapBinding(const KeyBinding& binding) {
-  PressBinding(binding);
-  ReleaseBinding(binding);
+void SidekeyController::TapStroke(const KeyStroke& stroke) {
+  PressStroke(stroke);
+  Sleep(45);
+  ReleaseStroke(stroke);
 }
 
 void SidekeyController::SendVirtualKey(WORD vk, bool key_down) {
@@ -429,13 +492,44 @@ SidekeyController::KeyBinding SidekeyController::ParseBinding(
   if (!map) {
     return binding;
   }
-  binding.windows_vk = GetInt(*map, "windowsVk", 0);
+  const auto* strokes_value = FindValue(*map, "strokes");
+  if (strokes_value) {
+    if (const auto* strokes =
+            std::get_if<flutter::EncodableList>(strokes_value)) {
+      for (const auto& item : *strokes) {
+        if (const auto* stroke_map =
+                std::get_if<flutter::EncodableMap>(&item)) {
+          KeyStroke stroke = ParseStroke(stroke_map);
+          if (stroke.IsValid()) {
+            binding.strokes.push_back(stroke);
+          }
+        }
+      }
+      if (binding.IsValid()) {
+        return binding;
+      }
+    }
+  }
+  KeyStroke legacy = ParseStroke(map);
+  if (legacy.IsValid()) {
+    binding.strokes.push_back(legacy);
+  }
+  return binding;
+}
+
+SidekeyController::KeyStroke SidekeyController::ParseStroke(
+    const flutter::EncodableMap* map) const {
+  KeyStroke stroke;
+  if (!map) {
+    return stroke;
+  }
+  stroke.windows_vk = GetInt(*map, "windowsVk", 0);
   const auto modifiers = GetStringList(*map, "modifiers");
   for (const auto& modifier : modifiers) {
     const WORD vk = ModifierToVk(modifier);
     if (vk != 0) {
-      binding.modifiers.push_back(vk);
+      stroke.modifiers.push_back(vk);
     }
   }
-  return binding;
+  return stroke;
 }
