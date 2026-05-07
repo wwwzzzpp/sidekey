@@ -1,0 +1,18 @@
+#pragma once
+
+#define IDI_APP 101
+
+#define IDC_ENABLE 1001
+#define IDC_INTERCEPT 1002
+#define IDC_LAUNCH 1003
+#define IDC_BINDING 1004
+#define IDC_RECORD 1005
+#define IDC_CLEAR 1006
+#define IDC_TEST 1007
+#define IDC_MODE_TAP 1008
+#define IDC_MODE_HOLD 1009
+#define IDC_STATUS 1010
+
+#define ID_TRAY_SHOW 2001
+#define ID_TRAY_TOGGLE 2002
+#define ID_TRAY_QUIT 2003

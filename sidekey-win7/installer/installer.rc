@@ -1,0 +1,8 @@
+#include <windows.h>
+#include "../src/resource.h"
+
+IDI_APP ICON "assets/app_icon.ico"
+
+201 RCDATA "dist/app/sidekey.exe"
+
+1 RT_MANIFEST "installer/installer.manifest"
